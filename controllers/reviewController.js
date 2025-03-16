@@ -37,69 +37,99 @@ export const getReviewsCountByYear = async (req, res) => {
 export const countUsefulFunnyCoolReviews = async (req, res) => {
     try {
         const db = req.app.locals.db;
-        const sampleSize = 10000;
-const sample = await db.collection('review')
-    .aggregate([{ $sample: { size: sampleSize } }])
-    .toArray();
+        
+        // Aggregate to count reviews where useful, funny, or cool values are greater than 0
+        const result = await db.collection('review').aggregate([
+            {
+                $facet: {
+                    "useful": [
+                        { $match: { useful: { $gt: 0 } } },
+                        { $count: "count" }
+                    ],
+                    "funny": [
+                        { $match: { funny: { $gt: 0 } } },
+                        { $count: "count" }
+                    ],
+                    "cool": [
+                        { $match: { cool: { $gt: 0 } } },
+                        { $count: "count" }
+                    ]
+                }
+            },
+            {
+                $project: {
+                    useful: { $arrayElemAt: ["$useful.count", 0] },
+                    funny: { $arrayElemAt: ["$funny.count", 0] },
+                    cool: { $arrayElemAt: ["$cool.count", 0] }
+                }
+            }
+        ]).toArray();
 
-const result = await db.collection('review').aggregate([
-    { $match: { _id: { $in: sample.map(doc => doc._id) } } },
-    { $project: { words: { $split: ["$cleanedText", " "] } } },
-    { $unwind: "$words" },
-    { $match: { words: { $ne: "", $exists: true } } },
-    { $group: { _id: { $toLower: "$words" }, count: { $sum: 1 } } },
-    { $sort: { count: -1 } },
-    { $limit: 20 }
-]).toArray();
+        // Handle potential null values in the result
+        const formattedResult = {
+            useful: result[0].useful || 0,
+            funny: result[0].funny || 0,
+            cool: result[0].cool || 0
+        };
 
-res.status(200).json(result);
-
+        res.status(200).json(formattedResult);
     } catch (error) {
         console.error('Error counting useful, funny, and cool reviews:', error);
         res.status(500).json({ message: 'Internal server error' });
     }
 };
 
+
+
 export const rankUsersByReviewsPerYear = async (req, res) => {
     try {
         const db = req.app.locals.db;
-
-        // Ensure indexes exist for faster querying
-        await db.collection('review').createIndex({ date: 1 });
-        await db.collection('review').createIndex({ userId: 1 });
-
+        
         const result = await db.collection('review').aggregate([
+            { 
+                $match: { 
+                    date: { $exists: true, $ne: null }
+                } 
+            },
+            { $limit: 100000 }, // Limit to first 100,000 documents
             {
                 $addFields: {
-                    year: { $year: { $toDate: "$date" } } // Extract year from the date field
+                    // Convert the 'date' string to a Date object if needed
+                    dateAsDate: { $toDate: "$date" },
+                    year: { $year: { $toDate: "$date" } }
                 }
             },
             {
                 $group: {
-                    _id: { userId: "$userId", year: "$year" }, // Group by user and year
-                    totalReviews: { $sum: 1 } // Count reviews per user per year
+                    _id: { year: "$year", userId: "$user_id" },
+                    totalReviews: { $sum: 1 }
                 }
             },
             {
-                $sort: { "_id.year": 1, totalReviews: -1 } // Sort by year and total reviews (descending)
+                $sort: { totalReviews: -1 }
             },
             {
                 $group: {
-                    _id: "$_id.year", // Group by year
-                    users: { $push: { userId: "$_id.userId", totalReviews: "$totalReviews" } } // Collect all users for each year
+                    _id: "$_id.year",
+                    userReviews: { 
+                        $push: { 
+                            userId: "$_id.userId", 
+                            totalReviews: "$totalReviews" 
+                        } 
+                    }
                 }
             },
             {
                 $project: {
                     _id: 0,
                     year: "$_id",
-                    topUsers: { $slice: ["$users", 10] } // Extract top 10 users for each year
+                    topUsers: { $slice: ["$userReviews", 10] }
                 }
             },
             {
-                $sort: { year: 1 } // Sort the final result by year
+                $sort: { year: 1 }
             }
-        ]).toArray();
+        ], { maxTimeMS: 6000000 }).toArray(); // Set a timeout of 60 seconds
 
         res.status(200).json(result);
     } catch (error) {
@@ -113,56 +143,12 @@ export const rankUsersByReviewsPerYear = async (req, res) => {
 };
 
 
-// export const extractTop20CommonWords = async (req, res) => {
-//     try {
-//         const db = req.app.locals.db;
-//         const batchSize = 10000;
-//         const wordCounts = new Map();
-        
-//         let processed = 0;
-//         const cursor = db.collection('review').find(
-//             { text: { $exists: true, $ne: "" } },
-//             { projection: { text: 1 } }
-//         ).batchSize(batchSize);
-
-//         while (await cursor.hasNext()) {
-//             const doc = await cursor.next();
-//             const words = doc.text.toLowerCase()
-//                 .replace(/[^a-z\s]/g, ' ')
-//                 .split(/\s+/)
-//                 .filter(word => word.length > 2 && word.length < 15);
-
-//             words.forEach(word => {
-//                 wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
-//             });
-
-//             processed++;
-//             if (processed % batchSize === 0) {
-//                 console.log(`Processed ${processed} documents`);
-//             }
-//         }
-
-//         const top20 = Array.from(wordCounts.entries())
-//             .sort((a, b) => b[1] - a[1])
-//             .slice(0, 20)
-//             .map(([word, count]) => ({ _id: word, count }));
-
-//         res.status(200).json(top20);
-
-//     } catch (error) {
-//         console.error('Error extracting top 20 common words:', error);
-//         res.status(500).json({ 
-//             message: 'Internal server error',
-//             error: error.message 
-//         });
-//     }
-// };
 
 
 export const extractTop20CommonWords = async (req, res) => {
     try {
         const db = req.app.locals.db;
-        const batchSize = 100000;
+        const batchSize = 10000;
         const wordCounts = new Map();
         
         let processed = 0;
@@ -186,7 +172,7 @@ export const extractTop20CommonWords = async (req, res) => {
             if (processed % batchSize === 0) {
                 console.log(`Processed ${processed} documents`);
             }
-            if (processed >= 1000000) {
+            if (processed >= 10000) {
                 break;
             }
         }

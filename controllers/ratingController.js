@@ -123,7 +123,7 @@ export const getRatingStats = async (req, res) => {
                 { $sort: { _id: 1 } }
             ]).toArray(),
             
-            req.app.locals.db.collection('reviews').aggregate([
+            req.app.locals.db.collection('review').aggregate([
                 {
                     $addFields: {
                         dateObj: { $toDate: "$date" }
@@ -138,7 +138,7 @@ export const getRatingStats = async (req, res) => {
                 { $sort: { _id: 1 } }
             ]).toArray(),
             
-            req.app.locals.db.collection('reviews').aggregate([
+            req.app.locals.db.collection('review').aggregate([
                 { $match: { stars: 5 } },
                 {
                     $group: {
